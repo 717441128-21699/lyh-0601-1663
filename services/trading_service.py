@@ -114,6 +114,8 @@ class TradingService:
             
             offer_id = cursor.lastrowid
             
+            conn.commit()
+            
             AlertService.create_alert(
                 vehicle_id=vehicle_id,
                 alert_type='new_offer',
@@ -123,7 +125,6 @@ class TradingService:
                 recipient_role='sales_manager'
             )
             
-            conn.commit()
             return offer_id
         except Exception as e:
             conn.rollback()
@@ -153,14 +154,15 @@ class TradingService:
             contract_no = f"HT{datetime.now().strftime('%Y%m%d')}{offer_id:06d}"
             
             cursor.execute('''
-                INSERT INTO contracts (contract_no, vehicle_id, offer_id, buyer_name, buyer_phone, final_price, status)
-                VALUES (?, ?, ?, ?, ?, ?, 'active')
+                INSERT INTO contracts (contract_no, vehicle_id, offer_id, buyer_name, buyer_phone, final_price, status, sign_date)
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
             ''', (
                 contract_no, vehicle_id, offer_id,
-                offer['buyer_name'], offer['buyer_phone'], offer['offer_price']
+                offer['buyer_name'], offer['buyer_phone'], offer['offer_price'],
+                datetime.now().strftime('%Y-%m-%d')
             ))
             
-            VehicleService.update_status(vehicle_id, 'sold')
+            cursor.execute("UPDATE vehicles SET status = 'sold' WHERE id = ?", (vehicle_id,))
             
             cursor.execute("UPDATE parking_spots SET status = 'empty', vehicle_id = NULL WHERE vehicle_id = ?", (vehicle_id,))
             
@@ -265,11 +267,29 @@ class TradingService:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
-            SELECT c.*, v.vin, v.brand, v.model, v.year
+            SELECT c.*, v.vin, v.brand, v.model, v.year, u.real_name as sales_manager_name
             FROM contracts c
             JOIN vehicles v ON c.vehicle_id = v.id
+            LEFT JOIN buyer_offers o ON c.offer_id = o.id
+            LEFT JOIN users u ON o.sales_manager_id = u.id
             WHERE c.id = ?
         ''', (contract_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+    
+    @staticmethod
+    def get_contract_by_no(contract_no):
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT c.*, v.vin, v.brand, v.model, v.year, u.real_name as sales_manager_name
+            FROM contracts c
+            JOIN vehicles v ON c.vehicle_id = v.id
+            LEFT JOIN buyer_offers o ON c.offer_id = o.id
+            LEFT JOIN users u ON o.sales_manager_id = u.id
+            WHERE c.contract_no = ?
+        ''', (contract_no,))
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None

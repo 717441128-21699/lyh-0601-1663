@@ -34,9 +34,11 @@ class InspectionService:
             
             record_id = cursor.lastrowid
             
-            VehicleService.update_status(vehicle_id, 'inspecting')
+            cursor.execute("UPDATE vehicles SET status = 'inspecting' WHERE id = ?", (vehicle_id,))
             
             cursor.execute("UPDATE workstations SET status = 'occupied' WHERE id = ?", (workstation_id,))
+            
+            cursor.execute("UPDATE inspection_schedules SET status = 'in_progress' WHERE id = ?", (schedule_id,))
             
             conn.commit()
             return record_id
@@ -58,11 +60,16 @@ class InspectionService:
                 raise ValueError("检测记录不存在")
             
             vehicle_id = record['vehicle_id']
+            schedule_id = record['schedule_id']
+            workstation_id = record['workstation_id']
             inspection_stage = record['inspection_stage']
             
             water_damage = scores.get('water_damage', 0)
             fire_damage = scores.get('fire_damage', 0)
             major_accident = scores.get('major_accident', 0)
+            appearance = scores.get('appearance', 0)
+            chassis = scores.get('chassis', 0)
+            engine = scores.get('engine', 0)
             
             needs_reinspection = False
             reinspection_reasons = []
@@ -79,21 +86,29 @@ class InspectionService:
                 needs_reinspection = True
                 reinspection_reasons.append(f'重大事故风险得分{major_accident}分，超过阈值')
             
+            if needs_reinspection:
+                record_status = 'recheck'
+                record_result = 'recheck'
+            else:
+                record_status = 'completed'
+                avg_score = (appearance + chassis + engine) / 3
+                if avg_score >= 60:
+                    record_result = 'pass'
+                else:
+                    record_result = 'fail'
+            
             update_fields = {
                 'end_time': datetime.now(),
                 'water_damage_score': water_damage,
                 'fire_damage_score': fire_damage,
                 'major_accident_score': major_accident,
+                'appearance_score': appearance,
+                'chassis_score': chassis,
+                'engine_score': engine,
                 'details': details,
-                'status': 'recheck' if needs_reinspection else 'completed'
+                'status': record_status,
+                'result': record_result
             }
-            
-            if '外观' in inspection_stage:
-                update_fields['appearance_score'] = scores.get('appearance', 0)
-            elif '底盘' in inspection_stage:
-                update_fields['chassis_score'] = scores.get('chassis', 0)
-            elif '发动机' in inspection_stage:
-                update_fields['engine_score'] = scores.get('engine', 0)
             
             if needs_reinspection:
                 update_fields['is_reinspection'] = 1
@@ -104,20 +119,14 @@ class InspectionService:
             
             cursor.execute(f"UPDATE inspection_records SET {set_clause} WHERE id = ?", values)
             
+            new_vehicle_status = 'pending_inspection'
+            
             if needs_reinspection:
-                VehicleService.update_status(vehicle_id, 'reinspection')
-                AlertService.create_alert(
-                    vehicle_id=vehicle_id,
-                    alert_type='reinspection_required',
-                    title='复检预警',
-                    content='; '.join(reinspection_reasons),
-                    severity='critical',
-                    recipient_role='chief_inspector'
-                )
+                new_vehicle_status = 'reinspection'
             else:
                 cursor.execute('''
                     SELECT COUNT(*) as cnt FROM inspection_schedules 
-                    WHERE vehicle_id = ? AND status = 'approved'
+                    WHERE vehicle_id = ? AND status IN ('approved', 'in_progress', 'completed')
                 ''', (vehicle_id,))
                 total_stages = cursor.fetchone()['cnt']
                 
@@ -127,18 +136,44 @@ class InspectionService:
                 ''', (vehicle_id,))
                 completed_stages = cursor.fetchone()['cnt']
                 
+                cursor.execute('''
+                    SELECT result FROM inspection_records 
+                    WHERE vehicle_id = ? AND status = 'completed'
+                    ORDER BY created_at DESC
+                ''', (vehicle_id,))
+                all_results = [r['result'] for r in cursor.fetchall()]
+                
                 if completed_stages >= total_stages and total_stages > 0:
-                    VehicleService.update_status(vehicle_id, 'inspection_completed')
+                    if 'fail' in all_results:
+                        new_vehicle_status = 'inspection_failed'
+                    else:
+                        new_vehicle_status = 'inspection_passed'
                 else:
-                    VehicleService.update_status(vehicle_id, 'pending_inspection')
+                    new_vehicle_status = 'pending_inspection'
             
-            cursor.execute("UPDATE workstations SET status = 'idle' WHERE id = ?", (record['workstation_id'],))
+            cursor.execute("UPDATE vehicles SET status = ? WHERE id = ?", (new_vehicle_status, vehicle_id))
+            
+            cursor.execute("UPDATE workstations SET status = 'idle' WHERE id = ?", (workstation_id,))
+            
+            cursor.execute("UPDATE inspection_schedules SET status = 'completed' WHERE id = ?", (schedule_id,))
             
             conn.commit()
+            
+            if needs_reinspection:
+                AlertService.create_alert(
+                    vehicle_id=vehicle_id,
+                    alert_type='reinspection_required',
+                    title='复检预警',
+                    content='; '.join(reinspection_reasons),
+                    severity='critical',
+                    recipient_role='chief_inspector'
+                )
+            
             return {
                 'success': True,
                 'needs_reinspection': needs_reinspection,
-                'reasons': reinspection_reasons
+                'reasons': reinspection_reasons,
+                'result': record_result
             }
         except Exception as e:
             conn.rollback()

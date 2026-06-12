@@ -364,6 +364,30 @@ class TradingWidget(QWidget):
             return reason_edit.toPlainText(), True
         return '', False
     
+    def num_to_chinese(self, num):
+        digits = ['零', '壹', '贰', '叁', '肆', '伍', '陆', '柒', '捌', '玖']
+        units = ['', '拾', '佰', '仟', '万', '拾', '佰', '仟', '亿']
+        
+        if num == 0:
+            return '零'
+        
+        result = ''
+        str_num = str(num)
+        length = len(str_num)
+        
+        for i, digit in enumerate(str_num):
+            d = int(digit)
+            unit_index = length - i - 1
+            
+            if d != 0:
+                result += digits[d] + units[unit_index]
+            else:
+                if i > 0 and result[-1] != '零':
+                    result += '零'
+        
+        result = result.rstrip('零')
+        return result
+    
     def show_contract_detail(self):
         current_row = self.contract_table.currentRow()
         if current_row < 0:
@@ -372,49 +396,107 @@ class TradingWidget(QWidget):
         
         contract_no = self.contract_table.item(current_row, 0).text()
         
+        contract = TradingService.get_contract_by_no(contract_no)
+        if not contract:
+            QMessageBox.warning(self, '提示', '未找到合同信息')
+            return
+        
         from PySide6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton
         
         dialog = QDialog(self)
         dialog.setWindowTitle(f'合同详情 - {contract_no}')
-        dialog.setMinimumSize(500, 400)
+        dialog.setMinimumSize(550, 500)
         
         layout = QVBoxLayout(dialog)
         
         detail_text = QTextEdit()
         detail_text.setReadOnly(True)
-        detail_text.setText(f'''合同编号: {contract_no}
+        detail_text.setStyleSheet('font-family: "Microsoft YaHei", sans-serif; font-size: 12px; line-height: 1.6;')
+        
+        buyer_name = contract.get('buyer_name', '未填写')
+        buyer_phone = contract.get('buyer_phone', '未填写')
+        vin = contract.get('vin', '')
+        brand = contract.get('brand', '')
+        model = contract.get('model', '')
+        year = contract.get('year', '')
+        final_price = contract.get('final_price', 0)
+        sign_date = contract.get('sign_date', '')[:10] if contract.get('sign_date') else ''
+        
+        contract_content = f'''
+========================================================================
+                          二手车买卖合同
+========================================================================
 
-【二手车买卖合同】
+合同编号：{contract_no}
+签订日期：{sign_date}
 
+一、合同双方
+------------------------------------------------------------------------
 甲方（卖方）：二手车交易市场
-乙方（买方）：[买家姓名]
+地址：二手车交易市场内
+联系电话：400-123-4567
 
-经双方协商一致，就二手车买卖事宜达成如下协议：
+乙方（买方）：{buyer_name}
+联系电话：{buyer_phone}
 
-1. 车辆信息
-   车辆VIN码：[VIN码]
-   品牌型号：[品牌型号]
-   成交价：人民币 [价格] 元整
+二、车辆基本信息
+------------------------------------------------------------------------
+车辆品牌：{brand}
+车辆型号：{model}
+年    款：{year}年款
+VIN 编码：{vin}
 
-2. 付款方式
-   乙方应在签订本合同当日支付全部车款。
+三、成交价格
+------------------------------------------------------------------------
+车辆成交总价：人民币 {final_price:,.0f} 元整
+（大写：{self.num_to_chinese(int(final_price))}元整）
 
-3. 车辆交付
-   甲方应在收到全部车款后3个工作日内交付车辆。
+四、付款方式
+------------------------------------------------------------------------
+1. 乙方应在本合同签订之日，向甲方支付全部购车款。
+2. 付款方式：□现金  □转账  □其他
 
-4. 双方权利义务
-   （略）
+五、车辆交付
+------------------------------------------------------------------------
+1. 甲方应在收到全部车款后 3 个工作日内，将车辆交付给乙方。
+2. 车辆交付时，双方应当场验收，乙方验收无误后签字确认。
+3. 车辆交付前的风险由甲方承担，交付后的风险由乙方承担。
 
-5. 违约责任
-   （略）
+六、双方权利与义务
+------------------------------------------------------------------------
+1. 甲方保证车辆来源合法，提供真实的车辆信息和相关证件。
+2. 甲方已向乙方如实告知车辆的车况、事故记录、检测结果等信息。
+3. 乙方应按约定时间支付购车款并接收车辆。
+4. 车辆交付后，乙方自行承担车辆的使用、维修、保险等费用。
 
-6. 争议解决
-   本合同履行过程中发生的争议，双方协商解决；协商不成的，可向当地人民法院起诉。
+七、违约责任
+------------------------------------------------------------------------
+1. 若乙方未按约定时间支付购车款，每逾期一日，应按应付金额的 0.5% 向甲方支付违约金。
+2. 若甲方未按约定时间交付车辆，每逾期一日，应按已收金额的 0.5% 向乙方支付违约金。
+3. 任何一方违反本合同约定，应承担相应的违约责任。
 
-合同签订日期：[日期]
+八、争议解决
+------------------------------------------------------------------------
+本合同履行过程中发生的争议，双方应友好协商解决；协商不成的，任何一方均可向车辆交易地人民法院提起诉讼。
 
-（此为系统生成电子合同预览）
-''')
+九、其他约定
+------------------------------------------------------------------------
+1. 本合同一式两份，甲乙双方各执一份，具有同等法律效力。
+2. 本合同自双方签字（盖章）之日起生效。
+3. 其他未尽事宜，双方可另行签订补充协议。
+
+========================================================================
+                      （此为系统生成电子合同）
+========================================================================
+
+甲方（盖章）：二手车交易市场              乙方（签字）：{buyer_name}
+
+经办人：{contract.get('sales_manager_name', '销售经理')}
+
+签订日期：{sign_date}
+'''
+        
+        detail_text.setText(contract_content)
         layout.addWidget(detail_text)
         
         close_btn = QPushButton('关闭')

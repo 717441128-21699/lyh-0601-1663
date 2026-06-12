@@ -41,12 +41,25 @@ class ApprovalService:
             cursor.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,))
             request = dict(cursor.fetchone())
             
+            is_schedule_adjustment = False
+            
             if request['request_type'] == 'schedule_adjustment':
                 cursor.execute('''
                     UPDATE inspection_schedules SET status = 'approved' WHERE id = ?
                 ''', (request['related_id'],))
+                is_schedule_adjustment = True
             
             conn.commit()
+            
+            if is_schedule_adjustment:
+                AlertService.create_alert(
+                    alert_type='schedule_adjustment_approved',
+                    title='排程调整申请已通过',
+                    content='您的排程调整申请已通过审批',
+                    severity='info',
+                    recipient_role='inspector'
+                )
+            
             return True
         except Exception as e:
             conn.rollback()
@@ -68,12 +81,25 @@ class ApprovalService:
             cursor.execute("SELECT * FROM approval_requests WHERE id = ?", (request_id,))
             request = dict(cursor.fetchone())
             
+            is_schedule_adjustment = False
+            
             if request['request_type'] == 'schedule_adjustment':
                 cursor.execute('''
-                    UPDATE inspection_schedules SET status = 'approved' WHERE id = ?
+                    UPDATE inspection_schedules SET status = 'adjustment_rejected' WHERE id = ?
                 ''', (request['related_id'],))
+                is_schedule_adjustment = True
             
             conn.commit()
+            
+            if is_schedule_adjustment:
+                AlertService.create_alert(
+                    alert_type='schedule_adjustment_rejected',
+                    title='排程调整申请被驳回',
+                    content=f'您的排程调整申请已被驳回，原因：{reason}',
+                    severity='warning',
+                    recipient_role='inspector'
+                )
+            
             return True
         except Exception as e:
             conn.rollback()

@@ -24,49 +24,84 @@ class SchedulingService:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        pending_vehicles = VehicleService.get_pending_inspection_vehicles()
-        
-        cursor.execute("SELECT * FROM inspectors WHERE status = 'available'")
-        inspectors = [dict(row) for row in cursor.fetchall()]
-        
-        cursor.execute("SELECT * FROM workstations WHERE status != 'maintenance'")
-        workstations = [dict(row) for row in cursor.fetchall()]
-        
-        cursor.execute("SELECT * FROM inspection_records WHERE end_time IS NOT NULL")
-        history_records = [dict(row) for row in cursor.fetchall()]
-        
-        schedules = []
-        
-        for vehicle in pending_vehicles:
-            vehicle_schedules = SchedulingService._schedule_vehicle(
-                vehicle, inspectors, workstations, history_records, schedule_date
-            )
-            schedules.extend(vehicle_schedules)
-        
-        for sched in schedules:
+        try:
             cursor.execute('''
-                INSERT INTO inspection_schedules 
-                (vehicle_id, inspector_id, workstation_id, schedule_date, 
-                 start_time, end_time, inspection_type, status, priority)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
-            ''', (
-                sched['vehicle_id'],
-                sched['inspector_id'],
-                sched['workstation_id'],
-                schedule_date,
-                sched['start_time'],
-                sched['end_time'],
-                sched['inspection_type'],
-                sched['priority']
-            ))
-        
-        conn.commit()
-        conn.close()
+                DELETE FROM inspection_schedules 
+                WHERE schedule_date = ? AND status = 'pending_approval'
+            ''', (schedule_date,))
+            
+            cursor.execute('''
+                SELECT DISTINCT vehicle_id FROM inspection_schedules 
+                WHERE schedule_date = ? AND status IN ('approved', 'adjustment_pending', 'in_progress', 'completed')
+            ''', (schedule_date,))
+            scheduled_vehicle_ids = [row['vehicle_id'] for row in cursor.fetchall()]
+            
+            cursor.execute('''
+                SELECT inspector_id, workstation_id, start_time, end_time, status
+                FROM inspection_schedules 
+                WHERE schedule_date = ? AND status NOT IN ('cancelled', 'rejected', 'adjustment_rejected')
+            ''', (schedule_date,))
+            existing_db_slots = [dict(row) for row in cursor.fetchall()]
+            
+            pending_vehicles = VehicleService.get_pending_inspection_vehicles()
+            
+            vehicles_to_schedule = [
+                v for v in pending_vehicles 
+                if v['id'] not in scheduled_vehicle_ids
+            ]
+            
+            cursor.execute("SELECT * FROM inspectors WHERE status = 'available'")
+            inspectors = [dict(row) for row in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM workstations WHERE status != 'maintenance'")
+            workstations = [dict(row) for row in cursor.fetchall()]
+            
+            cursor.execute("SELECT * FROM inspection_records WHERE end_time IS NOT NULL")
+            history_records = [dict(row) for row in cursor.fetchall()]
+            
+            schedules = []
+            
+            all_generated_slots = list(existing_db_slots)
+            
+            for vehicle in vehicles_to_schedule:
+                vehicle_schedules = SchedulingService._schedule_vehicle(
+                    vehicle, inspectors, workstations, history_records, schedule_date,
+                    all_generated_slots
+                )
+                schedules.extend(vehicle_schedules)
+                all_generated_slots.extend(vehicle_schedules)
+            
+            for sched in schedules:
+                cursor.execute('''
+                    INSERT INTO inspection_schedules 
+                    (vehicle_id, inspector_id, workstation_id, schedule_date, 
+                     start_time, end_time, inspection_type, status, priority)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_approval', ?)
+                ''', (
+                    sched['vehicle_id'],
+                    sched['inspector_id'],
+                    sched['workstation_id'],
+                    schedule_date,
+                    sched['start_time'],
+                    sched['end_time'],
+                    sched['inspection_type'],
+                    sched['priority']
+                ))
+            
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
         
         return schedules
     
     @staticmethod
-    def _schedule_vehicle(vehicle, inspectors, workstations, history_records, schedule_date):
+    def _schedule_vehicle(vehicle, inspectors, workstations, history_records, schedule_date, existing_slots=None):
+        if existing_slots is None:
+            existing_slots = []
+        
         schedules = []
         priority = vehicle['urgent_level']
         
@@ -95,14 +130,14 @@ class SchedulingService:
             
             best_pair = SchedulingService._find_best_slot(
                 suitable_inspectors, suitable_stations, 
-                current_time, duration, schedule_date
+                current_time, duration, schedule_date, existing_slots
             )
             
             if best_pair:
                 start_time = best_pair['start_time']
                 end_time = start_time + timedelta(minutes=duration)
                 
-                schedules.append({
+                schedule_entry = {
                     'vehicle_id': vehicle['id'],
                     'inspector_id': best_pair['inspector_id'],
                     'workstation_id': best_pair['workstation_id'],
@@ -110,7 +145,9 @@ class SchedulingService:
                     'end_time': end_time.strftime('%H:%M'),
                     'inspection_type': stage_name,
                     'priority': priority
-                })
+                }
+                schedules.append(schedule_entry)
+                existing_slots.append(schedule_entry)
                 
                 current_time = end_time
                 
@@ -159,27 +196,30 @@ class SchedulingService:
         return durations
     
     @staticmethod
-    def _find_best_slot(inspectors, workstations, earliest_time, duration, schedule_date):
-        conn = get_db_connection()
-        cursor = conn.cursor()
+    def _find_best_slot(inspectors, workstations, earliest_time, duration, schedule_date, existing_slots=None):
+        if existing_slots is None:
+            existing_slots = []
         
         best_slot = None
         earliest_end = None
         
         for inspector in inspectors:
+            inspector_slots = [
+                s for s in existing_slots 
+                if s.get('inspector_id') == inspector['id']
+            ]
+            
             for workstation in workstations:
-                cursor.execute('''
-                    SELECT start_time, end_time FROM inspection_schedules
-                    WHERE inspector_id = ? AND workstation_id = ? 
-                    AND schedule_date = ? AND status != 'cancelled'
-                    ORDER BY start_time
-                ''', (inspector['id'], workstation['id'], schedule_date))
+                workstation_slots = [
+                    s for s in existing_slots 
+                    if s.get('workstation_id') == workstation['id']
+                ]
                 
-                existing_slots = cursor.fetchall()
+                all_slots = inspector_slots + workstation_slots
                 
                 slot_start = earliest_time
                 
-                for slot in existing_slots:
+                for slot in sorted(all_slots, key=lambda x: x['start_time']):
                     slot_end = datetime.combine(
                         schedule_date,
                         datetime.strptime(slot['end_time'], '%H:%M').time()
@@ -208,7 +248,6 @@ class SchedulingService:
                         'start_time': slot_start
                     }
         
-        conn.close()
         return best_slot
     
     @staticmethod
@@ -336,7 +375,8 @@ class SchedulingService:
             FROM inspection_schedules s
             JOIN vehicles v ON s.vehicle_id = v.id
             JOIN workstations ws ON s.workstation_id = ws.id
-            WHERE s.inspector_id = ? AND s.schedule_date = ? AND s.status = 'approved'
+            WHERE s.inspector_id = ? AND s.schedule_date = ? 
+            AND s.status IN ('approved', 'adjustment_pending', 'adjustment_rejected', 'in_progress', 'completed')
             ORDER BY s.start_time
         ''', (inspector_id, today))
         rows = cursor.fetchall()

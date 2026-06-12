@@ -101,9 +101,9 @@ class InspectionWidget(QWidget):
         schedule_layout = QVBoxLayout(schedule_group)
         
         self.schedule_table = QTableWidget()
-        self.schedule_table.setColumnCount(6)
+        self.schedule_table.setColumnCount(7)
         self.schedule_table.setHorizontalHeaderLabels([
-            'ID', 'VIN码', '品牌型号', '检测项目', '工位', '时间'
+            'ID', 'VIN码', '品牌型号', '检测项目', '工位', '时间', '状态'
         ])
         self.schedule_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.schedule_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -199,6 +199,37 @@ class InspectionWidget(QWidget):
             self.schedule_table.setItem(row, 3, QTableWidgetItem(sched.get('inspection_type', '')))
             self.schedule_table.setItem(row, 4, QTableWidgetItem(sched['workstation_name']))
             self.schedule_table.setItem(row, 5, QTableWidgetItem(f"{sched['start_time']} - {sched['end_time']}"))
+            
+            status_text = self.get_schedule_status_text(sched['status'])
+            status_item = QTableWidgetItem(status_text)
+            status_item.setForeground(QBrush(self.get_schedule_status_color(sched['status'])))
+            self.schedule_table.setItem(row, 6, status_item)
+    
+    def get_schedule_status_text(self, status):
+        status_map = {
+            'pending_approval': '待审批',
+            'approved': '已批准',
+            'rejected': '已驳回',
+            'in_progress': '进行中',
+            'completed': '已完成',
+            'adjustment_pending': '调整待批',
+            'adjustment_rejected': '调整驳回',
+            'cancelled': '已取消',
+        }
+        return status_map.get(status, status)
+    
+    def get_schedule_status_color(self, status):
+        color_map = {
+            'pending_approval': QColor('#f39c12'),
+            'approved': QColor('#27ae60'),
+            'rejected': QColor('#e74c3c'),
+            'in_progress': QColor('#3498db'),
+            'completed': QColor('#27ae60'),
+            'adjustment_pending': QColor('#e67e22'),
+            'adjustment_rejected': QColor('#c0392b'),
+            'cancelled': QColor('#7f8c8d'),
+        }
+        return color_map.get(status, QColor('#333'))
     
     def update_timer(self):
         if self.current_record_id:
@@ -224,6 +255,12 @@ class InspectionWidget(QWidget):
             return
         
         schedule_id = int(self.schedule_table.item(current_row, 0).text())
+        schedule_status = self.schedule_table.item(current_row, 6).text()
+        
+        if schedule_status not in ['已批准', '进行中']:
+            QMessageBox.warning(self, '提示', f'当前排程状态为「{schedule_status}」，无法开始检测。\n请选择状态为「已批准」的排程。')
+            return
+        
         user = AuthService.get_current_user()
         inspector = AuthService.get_inspector_by_user_id(user['id'])
         
@@ -264,11 +301,13 @@ class InspectionWidget(QWidget):
                 
                 if result['needs_reinspection']:
                     QMessageBox.warning(
-                        self, '复检提醒',
-                        '检测完成，但触发复检条件！\n原因:\n' + '\n'.join(result['reasons'])
+                        self, '待复检',
+                        '检测完成，需复检！\n原因:\n' + '\n'.join(result['reasons'])
                     )
-                else:
-                    QMessageBox.information(self, '成功', '检测已完成')
+                elif result['result'] == 'pass':
+                    QMessageBox.information(self, '检测通过', '本次检测已通过！')
+                elif result['result'] == 'fail':
+                    QMessageBox.warning(self, '检测未通过', '本次检测未通过。')
                 
                 self.refresh()
                 self.notes_edit.clear()

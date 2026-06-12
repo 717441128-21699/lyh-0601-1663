@@ -36,7 +36,8 @@ class VehicleManagementWidget(QWidget):
         self.status_combo.addItem('待检测', 'pending_inspection')
         self.status_combo.addItem('检测中', 'inspecting')
         self.status_combo.addItem('待复检', 'reinspection')
-        self.status_combo.addItem('检测完成', 'inspection_completed')
+        self.status_combo.addItem('检测通过', 'inspection_passed')
+        self.status_combo.addItem('检测未通过', 'inspection_failed')
         self.status_combo.addItem('在售', 'for_sale')
         self.status_combo.addItem('已售出', 'sold')
         self.status_combo.currentIndexChanged.connect(self.refresh)
@@ -144,6 +145,8 @@ class VehicleManagementWidget(QWidget):
             'pending_inspection': '待检测',
             'inspecting': '检测中',
             'reinspection': '待复检',
+            'inspection_passed': '检测通过',
+            'inspection_failed': '检测未通过',
             'inspection_completed': '检测完成',
             'for_sale': '在售',
             'sold': '已售出',
@@ -155,6 +158,8 @@ class VehicleManagementWidget(QWidget):
             'pending_inspection': QColor('#f39c12'),
             'inspecting': QColor('#3498db'),
             'reinspection': QColor('#e74c3c'),
+            'inspection_passed': QColor('#27ae60'),
+            'inspection_failed': QColor('#c0392b'),
             'inspection_completed': QColor('#27ae60'),
             'for_sale': QColor('#9b59b6'),
             'sold': QColor('#7f8c8d'),
